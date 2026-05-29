@@ -1,0 +1,29 @@
+{
+  "root": "PROGRAM",
+  "nodes": {
+    "PROGRAM": {
+      "start": "<PROGRAM>",
+      "end": "</PROGRAM>",
+      "attributes": {
+        "P_NAME": { "required": true, "pattern": "^P[0-9]+$" }
+      },
+      "children": {
+        "VAR_SECTOR": { "min": 1, "max": 1 }
+      }
+    },
+    "VAR_SECTOR": {
+      "start": "[VAR_SECTOR_START]",
+      "end": "[VAR_SECTOR_END]",
+      "children": {
+        "VAR": { "min": 1 }
+      }
+    },
+    "VAR": {
+      "start": "<VAR>",
+      "end": "</VAR>",
+      "attributes": {
+        "V_NAME": { "required": true, "unique": true }
+      }
+    }
+  }
+}
