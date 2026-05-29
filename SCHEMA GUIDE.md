@@ -1,16 +1,36 @@
 # Schema 撰寫說明文件
 
 本工具是一個「schema → C++98 驗證器」產生器。你只維護一份 `schema.json`,
-跑 `gen.py` 後得到一份純 if-else 的 `validator.cpp`,完全不必手寫 C++。
+跑 `gen.py` 後得到一組 `.h` + `.cpp`,內含一個驗證器 **class**(所有函式皆為
+member function、規則皆為純 if-else),完全不必手寫 C++。
 
 ```
-python3 gen.py schema.json validator.cpp     # 產生
-g++ -std=c++98 -o validator validator.cpp    # 編譯
-./validator data.txt                          # 驗證
+# 產生 (第四個參數為 class 名稱, 省略則預設 Validator)
+python3 gen.py schema.json validator.h validator.cpp Validator
+
+# 編譯成目的檔, 與你的程式連結
+g++ -std=c++98 -c validator.cpp -o validator.o
 ```
 
-驗證通過印 `OK: 文件合法` 並回傳 0;否則逐條印出 `[錯誤碼] line N: 訊息`
-並回傳 1。
+產生的 class 不含 `main`,以 `std::vector<std::string>`(每個元素一行)為輸入,
+可指定起始索引:
+
+```cpp
+#include "validator.h"
+
+std::vector<std::string> lines = /* 每個元素一行 */;
+Validator v;
+bool ok = v.validate(lines);            // 從頭檢查
+// 或:  v.validate(lines, startIndex);  // 從指定索引開始檢查到結尾
+
+if (!ok) {
+    const std::vector<ValidationError>& errs = v.errors();  // 每筆: code / line / message
+    // errs[i].line 為「lines 向量中的索引」(絕對, 0 起算), 方便對映回原始資料
+}
+```
+
+`validate` 回傳 `true` 表示完全合法;否則錯誤收進 `errors()`,由呼叫端決定如何呈現
+(不再用 `std::cout` 直接輸出)。同一物件可重複呼叫,每次會先清空上一輪錯誤。
 
 -----
 
@@ -159,16 +179,19 @@ V_NAME=alpha
 
 ## 五、產生的程式碼長什麼樣
 
+所有函式都是 class 的 member function(以 `Validator::` 為例;class 名稱由
+產生器第四個參數決定)。內部型別 `Node`/`Attr` 在 header 前向宣告、定義於 `.cpp`。
+
 ### 分隔符比對(由 start/end 產生)
 
 ```cpp
-static int matchStart(const std::string& s, std::string& name) {
+int Validator::matchStart(const std::string& s, std::string& name) const {
     if (s == "<PROGRAM>") { name = "PROGRAM"; return 1; }
     else if (s == "[VAR_SECTOR_START]") { name = "VAR_SECTOR"; return 1; }
     else if (s == "<VAR>") { name = "VAR"; return 1; }
     return 0;
 }
-static int matchEnd(const std::string& s, std::string& name) {
+int Validator::matchEnd(const std::string& s, std::string& name) const {
     if (s == "</PROGRAM>") { name = "PROGRAM"; return 1; }
     else if (s == "[VAR_SECTOR_END]") { name = "VAR_SECTOR"; return 1; }
     else if (s == "</VAR>") { name = "VAR"; return 1; }
@@ -179,16 +202,16 @@ static int matchEnd(const std::string& s, std::string& name) {
 ### 規則函式(以 VAR:required + unique 為例)
 
 ```cpp
-static int check_VAR(const Node* node) {
+int Validator::check_VAR(const Node* node) {
     int errs = 0;
     /* E006: 屬性 V_NAME 必填 */
     if (hasAttr(node, "V_NAME") == 0) {
-        reportError(node->line, "E006", "VAR 範圍內缺少必要屬性 V_NAME");
+        addError(node->line, "E006", "VAR 範圍內缺少必要屬性 V_NAME");
         errs = errs + 1;
     }
     /* E007: 屬性 V_NAME 須唯一 (同範圍內同類節點不可重複) */
     if (hasEarlierSiblingSameAttr(node, "V_NAME") == 1) {
-        reportError(node->line, "E007", "VAR 的 V_NAME 值重複 (同範圍內須唯一)");
+        addError(node->line, "E007", "VAR 的 V_NAME 值重複 (同範圍內須唯一)");
         errs = errs + 1;
     }
     return errs;
@@ -198,27 +221,27 @@ static int check_VAR(const Node* node) {
 ### 規則函式(以 PROGRAM:required + pattern + 子節點 min/max 為例)
 
 ```cpp
-static int check_PROGRAM(const Node* node) {
+int Validator::check_PROGRAM(const Node* node) {
     int errs = 0;
     /* E001: 屬性 P_NAME 必填 */
     if (hasAttr(node, "P_NAME") == 0) {
-        reportError(node->line, "E001", "PROGRAM 範圍內缺少必要屬性 P_NAME");
+        addError(node->line, "E001", "PROGRAM 範圍內缺少必要屬性 P_NAME");
         errs = errs + 1;
     } else {
         /* E002: 屬性 P_NAME 值格式須符合 ^P[0-9]+$ */
         if (matchAttr_PROGRAM_P_NAME(getAttr(node, "P_NAME")) == 0) {
-            reportError(node->line, "E002", "PROGRAM 的 P_NAME 值格式不符");
+            addError(node->line, "E002", "PROGRAM 的 P_NAME 值格式不符");
             errs = errs + 1;
         }
     }
     int cnt_VAR_SECTOR = countChildren(node, "VAR_SECTOR");
     /* E003: 子節點 VAR_SECTOR 至少需 1 個 */
     if (cnt_VAR_SECTOR < 1) {
-        reportError(node->line, "E003", "PROGRAM 範圍內 VAR_SECTOR 數量不足 (需至少 1)");
+        addError(node->line, "E003", "PROGRAM 範圍內 VAR_SECTOR 數量不足 (需至少 1)");
         errs = errs + 1;
     }
     else if (cnt_VAR_SECTOR > 1) {
-        reportError(node->line, "E004", "PROGRAM 範圍內 VAR_SECTOR 數量過多 (上限 1)");
+        addError(node->line, "E004", "PROGRAM 範圍內 VAR_SECTOR 數量過多 (上限 1)");
         errs = errs + 1;
     }
     return errs;
@@ -228,7 +251,7 @@ static int check_PROGRAM(const Node* node) {
 ### pattern 編出的 matcher(`^P[0-9]+$`)
 
 ```cpp
-static int matchAttr_PROGRAM_P_NAME(const char* s) {
+int Validator::matchAttr_PROGRAM_P_NAME(const char* s) const {
     int i = 0;
     { char c = s[i]; if (!(c=='P')) { return 0; } i = i + 1; }
     { char c = s[i]; if (!((c>='0'&&c<='9'))) { return 0; } i = i + 1;
@@ -246,10 +269,8 @@ static int matchAttr_PROGRAM_P_NAME(const char* s) {
 
 - `E001`、`E002`…:依 schema 規則「產生順序」自動編號(每次重產可能變動,
   訊息文字才是穩定的依據)。
-- 結構/系統層固定碼:
+- 結構層固定碼:
   - `E900` 結束標記未正確配對
   - `E902` 屬性出現在任何範圍之外
   - `E903` 範圍未關閉
   - `E904` 文件頂層不是恰好一個 root 節點
-  - `E999` 未知標籤(start 比對不到對應節點)
-  - `E000` 檔案無法開啟
